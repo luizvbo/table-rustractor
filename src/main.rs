@@ -16,6 +16,10 @@ struct Cli {
     /// Output directory for CSV files
     #[arg(short, long, default_value = ".")]
     output_dir: PathBuf,
+
+    /// Enable debug mode
+    #[arg(short, long)]
+    debug: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -25,12 +29,20 @@ struct Cell {
     rowspan: usize,
 }
 
-async fn fetch_html(source: &str) -> Result<String> {
-    if source.starts_with("http://") || source.starts_with("https://") {
+async fn fetch_html(source: &str, debug: bool) -> Result<String> {
+    let result = if source.starts_with("http://") || source.starts_with("https://") {
         reqwest::get(source).await?.text().await.context("Failed to fetch URL")
     } else {
         fs::read_to_string(source).context(format!("Failed to read file: {}", source))
+    };
+
+    if debug {
+        match &result {
+            Ok(html) => println!("Fetched HTML content: \n{}", &html[..html.len().min(200)]), // Print first 200 characters
+            Err(e) => println!("Error fetching HTML: {:?}", e),
+        }
     }
+    result
 }
 
 fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
@@ -47,23 +59,21 @@ fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
     (colspan, rowspan)
 }
 
-fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
+fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
     let document = Html::parse_document(html);
     let table_selector = Selector::parse("table").unwrap();
     let row_selector = Selector::parse("tr").unwrap();
     let cell_selector = Selector::parse("td, th").unwrap();
 
     let mut tables = Vec::new();
-    for table in document.select(&table_selector) {
+    for (table_index, table) in document.select(&table_selector).enumerate() {
         let mut grid: Vec<Vec<Option<Cell>>> = Vec::new();
         let mut max_columns = 0;
 
-        // First pass: collect all rows and determine the table dimensions
-        for row in table.select(&row_selector) {
+        for (row_index, row) in table.select(&row_selector).enumerate() {
             let mut current_row: Vec<Option<Cell>> = Vec::new();
             let mut col_index = 0;
 
-            // Fill in any cells from previous rows' rowspans
             while col_index < max_columns
                 && grid.last().map_or(false, |last_row| {
                     last_row
@@ -81,9 +91,7 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
                 }
             }
 
-            // Process cells in the current row
             for cell in row.select(&cell_selector) {
-                // Skip columns that are already filled by a previous colspan
                 while col_index < current_row.len() && current_row[col_index].is_some() {
                     col_index += 1;
                 }
@@ -95,7 +103,6 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
                     rowspan,
                 };
 
-                // Fill in all columns this cell spans
                 for _ in 0..colspan {
                     if col_index >= current_row.len() {
                         current_row.push(Some(new_cell.clone()));
@@ -107,14 +114,21 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
             }
             max_columns = max_columns.max(col_index);
 
-            // Pad the row to max_columns with None
             while current_row.len() < max_columns {
                 current_row.push(None);
             }
-            grid.push(current_row);
+            if debug {
+                println!(
+                    "Table {}: Row {}: Columns: {}, Cells: {:?}",
+                    table_index + 1,
+                    row_index + 1,
+                    max_columns,
+                    current_row
+                );
+            }
+            grid.push(current_row.clone());
         }
 
-        // Convert grid to final table format
         let mut final_table = Vec::new();
         for row in grid {
             let row_data: Vec<String> = row
@@ -124,8 +138,15 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
             final_table.push(row_data);
         }
         if !final_table.is_empty() {
-            tables.push(final_table);
+            if debug {
+                println!("Table {}: Extracted rows: {}", table_index + 1, final_table.len());
+            }
+            tables.push(final_table.clone());
         }
+    }
+
+    if debug {
+        println!("Total tables extracted: {}", tables.len());
     }
     Ok(tables)
 }
@@ -147,17 +168,14 @@ fn save_tables(tables: &[Vec<Vec<String>>], output_dir: &PathBuf) -> Result<()> 
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Fetch HTML content
-    let html_content = fetch_html(&cli.input).await?;
+    let html_content = fetch_html(&cli.input, cli.debug).await?;
 
-    // Extract tables
-    let tables = extract_tables(&html_content)?;
+    let tables = extract_tables(&html_content, cli.debug)?;
     if tables.is_empty() {
         println!("No tables found in the input source.");
         return Ok(());
     }
 
-    // Save tables as CSV files
     save_tables(&tables, &cli.output_dir)?;
     println!("Successfully extracted {} tables!", tables.len());
     Ok(())

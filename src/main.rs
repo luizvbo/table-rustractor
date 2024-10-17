@@ -1,10 +1,10 @@
+use anyhow::{Context, Result};
 use clap::Parser;
 use csv::Writer;
 use reqwest;
-use scraper::{Html, Selector, ElementRef};
+use scraper::{ElementRef, Html, Selector};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Result, Context};
 
 #[derive(Parser)]
 #[command(author, version, about = "Extract tables from HTML files and save them as CSV", long_about = None)]
@@ -18,7 +18,7 @@ struct Cli {
     output_dir: PathBuf,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Cell {
     content: String,
     colspan: usize,
@@ -27,10 +27,7 @@ struct Cell {
 
 async fn fetch_html(source: &str) -> Result<String> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        Ok(reqwest::get(source)
-            .await?
-            .text()
-            .await?)
+        Ok(reqwest::get(source).await?.text().await?)
     } else {
         Ok(fs::read_to_string(source)
             .with_context(|| format!("Failed to read file: {}", source))?)
@@ -38,10 +35,14 @@ async fn fetch_html(source: &str) -> Result<String> {
 }
 
 fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
-    let colspan = cell.value().attr("colspan")
+    let colspan = cell
+        .value()
+        .attr("colspan")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
-    let rowspan = cell.value().attr("rowspan")
+    let rowspan = cell
+        .value()
+        .attr("rowspan")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
     (colspan, rowspan)
@@ -65,11 +66,13 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
             let mut col_index = 0;
 
             // Fill in any cells from previous rows' rowspans
-            while col_index < max_columns && grid.last().map_or(false, |last_row| {
-                last_row.get(col_index).map_or(false, |cell| {
-                    cell.as_ref().map_or(false, |c| c.rowspan > 1)
+            while col_index < max_columns
+                && grid.last().map_or(false, |last_row| {
+                    last_row
+                        .get(col_index)
+                        .map_or(false, |cell| cell.as_ref().map_or(false, |c| c.rowspan > 1))
                 })
-            }) {
+            {
                 if let Some(prev_cell) = &grid.last().unwrap()[col_index] {
                     current_row.push(Some(Cell {
                         content: prev_cell.content.clone(),
@@ -108,7 +111,7 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
             }
 
             max_columns = max_columns.max(col_index);
-            
+
             // Pad the row to max_columns with None
             while current_row.len() < max_columns {
                 current_row.push(None);
@@ -120,7 +123,8 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
         // Convert grid to final table format
         let mut final_table = Vec::new();
         for row in grid {
-            let row_data: Vec<String> = row.into_iter()
+            let row_data: Vec<String> = row
+                .into_iter()
                 .map(|cell| cell.map_or(String::new(), |c| c.content))
                 .collect();
             final_table.push(row_data);

@@ -30,17 +30,6 @@ struct Cell {
     rowspan: usize,
 }
 
-//impl std::fmt::Debug for Cell {
-//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//        let content_with_newlines = self.content.replace("\n", "\\n");
-//        write!(
-//            f,
-//            "[{}, {}, {}]",
-//            content_with_newlines, self.colspan, self.rowspan
-//        )
-//    }
-//}
-
 /// Fetches HTML content from a URL or a file.
 ///
 /// # Arguments
@@ -107,6 +96,7 @@ fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
 /// # Returns
 ///
 /// * A Result containing a vector of tables, each table being a vector of rows, and each row being a vector of strings.
+
 fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
     let document = Html::parse_document(html);
     let table_selector = Selector::parse("table").unwrap();
@@ -114,11 +104,30 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
     let cell_selector = Selector::parse("td, th").unwrap();
 
     let mut tables = Vec::new();
-    for (table_index, table) in document.select(&table_selector).enumerate() {
+    extract_tables_recursive(
+        &document,
+        &table_selector,
+        &row_selector,
+        &cell_selector,
+        &mut tables,
+        debug,
+    );
+    Ok(tables)
+}
+
+fn extract_tables_recursive(
+    document: &Html,
+    table_selector: &Selector,
+    row_selector: &Selector,
+    cell_selector: &Selector,
+    tables: &mut Vec<Vec<Vec<String>>>,
+    debug: bool,
+) {
+    for table in document.select(table_selector) {
         let mut grid: Vec<Vec<Option<Cell>>> = Vec::new();
         let mut max_columns = 0;
 
-        for (row_index, row) in table.select(&row_selector).enumerate() {
+        for row in table.select(row_selector) {
             let mut current_row: Vec<Option<Cell>> = Vec::new();
             let mut col_index = 0;
 
@@ -139,7 +148,22 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
                 }
             }
 
-            for cell in row.select(&cell_selector) {
+            for cell in row.select(cell_selector) {
+                if cell.select(&table_selector).next().is_some() {
+                    // Handle nested table
+                    let nested_document = Html::parse_fragment(&cell.html());
+                    extract_tables_recursive(
+                        &nested_document,
+                        table_selector,
+                        row_selector,
+                        cell_selector,
+                        tables,
+                        debug,
+                    );
+                    col_index += 1;
+                    continue;
+                }
+
                 while col_index < current_row.len() && current_row[col_index].is_some() {
                     col_index += 1;
                 }
@@ -151,20 +175,19 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
                     rowspan,
                 };
 
-                for _ in 0..colspan {
-                    if col_index >= current_row.len() {
-                        current_row.push(Some(new_cell.clone()));
-                    } else {
-                        current_row[col_index] = Some(new_cell.clone());
-                    }
+                current_row.push(Some(new_cell.clone()));
+                for _ in 1..colspan {
+                    current_row.push(None);
                     col_index += 1;
                 }
+                col_index += 1;
             }
             max_columns = max_columns.max(col_index);
 
             while current_row.len() < max_columns {
                 current_row.push(None);
             }
+
             if debug {
                 let row_content: String = current_row
                     .iter()
@@ -174,17 +197,11 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
                         }
                         None => "".to_string(),
                     })
-                    .collect::<Vec<_>>().join(", ");
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 println!(
-                    "{}: {}",
-                    format!(
-                        "Table {}: Row {}: Columns: {}",
-                        table_index + 1,
-                        row_index + 1,
-                        max_columns
-                    )
-                    .green(),
-                    format!("Cells: {:?}", row_content).blue()
+                    "{}",
+                    format!("Columns: {}, Cells: {:?}", max_columns, row_content).blue()
                 );
             }
             grid.push(current_row.clone());
@@ -199,28 +216,9 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
             final_table.push(row_data);
         }
         if !final_table.is_empty() {
-            if debug {
-                println!(
-                    "{}",
-                    format!(
-                        "Table {}: Extracted rows: {}",
-                        table_index + 1,
-                        final_table.len()
-                    )
-                    .blue()
-                );
-            }
             tables.push(final_table.clone());
         }
     }
-
-    if debug {
-        println!(
-            "{}",
-            format!("Total tables extracted: {}", tables.len()).blue()
-        );
-    }
-    Ok(tables)
 }
 
 /// Saves the extracted tables as CSV files in the specified output directory.
@@ -233,10 +231,13 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
 /// # Returns
 ///
 /// * A Result indicating success or failure.
-fn save_tables(tables: &[Vec<Vec<String>>], output_dir: &PathBuf) -> Result<()> {
+fn save_tables(tables: &[Vec<Vec<String>>], output_dir: &PathBuf, debug: bool) -> Result<()> {
     fs::create_dir_all(output_dir).context("Failed to create output directory")?;
     for (i, table) in tables.iter().enumerate() {
         let filename = output_dir.join(format!("table_{}.csv", i + 1));
+        if debug {
+            println!("Writing CSV file: {:?}", filename);
+        }
         let mut writer = Writer::from_path(&filename).context("Failed to create CSV file")?;
         for row in table {
             writer.write_record(row).context("Failed to write record")?;
@@ -258,7 +259,117 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    save_tables(&tables, &cli.output_dir)?;
+    save_tables(&tables, &cli.output_dir, cli.debug)?;
     println!("Successfully extracted {} tables!", tables.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_tables_single_table() {
+        let html = r#"
+        <html>
+            <body>
+                <table>
+                    <tr><td>Cell 1</td><td>Cell 2</td></tr>
+                    <tr><td>Cell 3</td><td>Cell 4</td></tr>
+                </table>
+            </body>
+        </html>
+        "#;
+
+        let tables = extract_tables(html, false).unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].len(), 2);
+        assert_eq!(tables[0][0], vec!["Cell 1", "Cell 2"]);
+        assert_eq!(tables[0][1], vec!["Cell 3", "Cell 4"]);
+    }
+
+    #[test]
+    fn test_extract_tables_multiple_tables() {
+        let html = r#"
+        <html>
+            <body>
+                <table>
+                    <tr><td>A1</td><td>A2</td></tr>
+                    <tr><td>A3</td><td>A4</td></tr>
+                </table>
+                <table>
+                    <tr><td>B1</td><td>B2</td></tr>
+                    <tr><td>B3</td><td>B4</td></tr>
+                </table>
+            </body>
+        </html>
+        "#;
+
+        let tables = extract_tables(html, false).unwrap();
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].len(), 2);
+        assert_eq!(tables[0][0], vec!["A1", "A2"]);
+        assert_eq!(tables[0][1], vec!["A3", "A4"]);
+        assert_eq!(tables[1].len(), 2);
+        assert_eq!(tables[1][0], vec!["B1", "B2"]);
+        assert_eq!(tables[1][1], vec!["B3", "B4"]);
+    }
+
+    #[test]
+    fn test_extract_tables_with_colspan_rowspan() {
+        let html = r#"
+        <html>
+            <body>
+                <table>
+                    <tr><td colspan="2">Merged 1</td></tr>
+                    <tr><td>Cell 1</td><td>Cell 2</td></tr>
+                    <tr><td rowspan="2">Merged 2</td><td>Cell 3</td></tr>
+                    <tr><td>Cell 4</td></tr>
+                </table>
+            </body>
+        </html>
+        "#;
+
+        let tables = extract_tables(html, false).unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].len(), 4);
+        assert_eq!(tables[0][0], vec!["Merged 1", ""]);
+        assert_eq!(tables[0][1], vec!["Cell 1", "Cell 2"]);
+        assert_eq!(tables[0][2], vec!["Merged 2", "Cell 3"]);
+        assert_eq!(tables[0][3], vec!["", "Cell 4"]);
+    }
+    #[test]
+    fn test_extract_tables_with_nested_tables() {
+        let html = r#"
+        <html>
+            <body>
+                <table>
+                    <tr>
+                        <td>Main Table Cell 1</td>
+                        <td>
+                            <table>
+                                <tr><td>Nested Table Cell 1</td></tr>
+                                <tr><td>Nested Table Cell 2</td></tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr><td>Main Table Cell 2</td><td>Main Table Cell 3</td></tr>
+                </table>
+            </body>
+        </html>
+        "#;
+
+        let tables = extract_tables(html, false).unwrap();
+        assert_eq!(tables.len(), 2);
+
+        // Main table assertions
+        assert_eq!(tables[0].len(), 2);
+        assert_eq!(tables[0][0], vec!["Main Table Cell 1", ""]);
+        assert_eq!(tables[0][1], vec!["Main Table Cell 2", "Main Table Cell 3"]);
+
+        // Nested table assertions
+        assert_eq!(tables[1].len(), 2);
+        assert_eq!(tables[1][0], vec!["Nested Table Cell 1"]);
+        assert_eq!(tables[1][1], vec!["Nested Table Cell 2"]);
+    }
 }

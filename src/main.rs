@@ -30,6 +30,27 @@ struct Cell {
     rowspan: usize,
 }
 
+//impl std::fmt::Debug for Cell {
+//    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//        let content_with_newlines = self.content.replace("\n", "\\n");
+//        write!(
+//            f,
+//            "[{}, {}, {}]",
+//            content_with_newlines, self.colspan, self.rowspan
+//        )
+//    }
+//}
+
+/// Fetches HTML content from a URL or a file.
+///
+/// # Arguments
+///
+/// * `source` - A string slice that holds the URL or file path.
+/// * `debug` - A boolean to enable debug mode.
+///
+/// # Returns
+///
+/// * A Result containing the HTML content as a String if successful, or an error.
 async fn fetch_html(source: &str, debug: bool) -> Result<String> {
     let result = if source.starts_with("http://") || source.starts_with("https://") {
         reqwest::get(source)
@@ -43,16 +64,25 @@ async fn fetch_html(source: &str, debug: bool) -> Result<String> {
 
     if debug {
         match &result {
-            Ok(html) => println!(
-                "{}",
-                format!("Fetched HTML content: \n{}", &html[..html.len().min(200)]).green()
-            ), // Print first 200 characters
+            Ok(html) => {
+                println!("{}", "Fetched HTML content:".green());
+                println!("{}\n", (&html[..html.len().min(200)]).blue()); // Print first 200 characters
+            }
             Err(e) => println!("{}", format!("Error fetching HTML: {:?}", e).red()),
         }
     }
     result
 }
 
+/// Gets the colspan and rowspan attributes of a cell.
+///
+/// # Arguments
+///
+/// * `cell` - An ElementRef representing the cell.
+///
+/// # Returns
+///
+/// * A tuple containing the colspan and rowspan values as usize.
 fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
     let colspan = cell
         .value()
@@ -67,6 +97,16 @@ fn get_cell_spans(cell: ElementRef) -> (usize, usize) {
     (colspan, rowspan)
 }
 
+/// Extracts tables from the provided HTML content.
+///
+/// # Arguments
+///
+/// * `html` - A string slice that holds the HTML content.
+/// * `debug` - A boolean to enable debug mode.
+///
+/// # Returns
+///
+/// * A Result containing a vector of tables, each table being a vector of rows, and each row being a vector of strings.
 fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
     let document = Html::parse_document(html);
     let table_selector = Selector::parse("table").unwrap();
@@ -126,16 +166,25 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
                 current_row.push(None);
             }
             if debug {
+                let row_content: String = current_row
+                    .iter()
+                    .map(|cell| match cell {
+                        Some(cell) => {
+                            format!("['{}', {}, {}]", cell.content, cell.colspan, cell.rowspan)
+                        }
+                        None => "".to_string(),
+                    })
+                    .collect::<Vec<_>>().join(", ");
                 println!(
-                    "{}",
+                    "{}: {}",
                     format!(
-                        "Table {}: Row {}: Columns: {}, Cells: {:?}",
+                        "Table {}: Row {}: Columns: {}",
                         table_index + 1,
                         row_index + 1,
-                        max_columns,
-                        current_row
+                        max_columns
                     )
-                    .blue()
+                    .green(),
+                    format!("Cells: {:?}", row_content).blue()
                 );
             }
             grid.push(current_row.clone());
@@ -174,6 +223,16 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
     Ok(tables)
 }
 
+/// Saves the extracted tables as CSV files in the specified output directory.
+///
+/// # Arguments
+///
+/// * `tables` - A slice of tables, each table being a vector of rows, and each row being a vector of strings.
+/// * `output_dir` - A reference to a PathBuf representing the output directory.
+///
+/// # Returns
+///
+/// * A Result indicating success or failure.
 fn save_tables(tables: &[Vec<Vec<String>>], output_dir: &PathBuf) -> Result<()> {
     fs::create_dir_all(output_dir).context("Failed to create output directory")?;
     for (i, table) in tables.iter().enumerate() {

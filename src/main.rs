@@ -27,10 +27,9 @@ struct Cell {
 
 async fn fetch_html(source: &str) -> Result<String> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        Ok(reqwest::get(source).await?.text().await?)
+        reqwest::get(source).await?.text().await.context("Failed to fetch URL")
     } else {
-        Ok(fs::read_to_string(source)
-            .with_context(|| format!("Failed to read file: {}", source))?)
+        fs::read_to_string(source).context(format!("Failed to read file: {}", source))
     }
 }
 
@@ -55,7 +54,6 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
     let cell_selector = Selector::parse("td, th").unwrap();
 
     let mut tables = Vec::new();
-
     for table in document.select(&table_selector) {
         let mut grid: Vec<Vec<Option<Cell>>> = Vec::new();
         let mut max_columns = 0;
@@ -89,10 +87,8 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
                 while col_index < current_row.len() && current_row[col_index].is_some() {
                     col_index += 1;
                 }
-
                 let (colspan, rowspan) = get_cell_spans(cell);
                 let content = cell.text().collect::<String>().trim().to_string();
-
                 let new_cell = Cell {
                     content,
                     colspan,
@@ -109,14 +105,12 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
                     col_index += 1;
                 }
             }
-
             max_columns = max_columns.max(col_index);
 
             // Pad the row to max_columns with None
             while current_row.len() < max_columns {
                 current_row.push(None);
             }
-
             grid.push(current_row);
         }
 
@@ -129,28 +123,23 @@ fn extract_tables(html: &str) -> Result<Vec<Vec<Vec<String>>>> {
                 .collect();
             final_table.push(row_data);
         }
-
         if !final_table.is_empty() {
             tables.push(final_table);
         }
     }
-
     Ok(tables)
 }
 
 fn save_tables(tables: &[Vec<Vec<String>>], output_dir: &PathBuf) -> Result<()> {
-    fs::create_dir_all(output_dir)?;
-
+    fs::create_dir_all(output_dir).context("Failed to create output directory")?;
     for (i, table) in tables.iter().enumerate() {
         let filename = output_dir.join(format!("table_{}.csv", i + 1));
-        let mut writer = Writer::from_path(&filename)?;
-
+        let mut writer = Writer::from_path(&filename).context("Failed to create CSV file")?;
         for row in table {
-            writer.write_record(row)?;
+            writer.write_record(row).context("Failed to write record")?;
         }
-        writer.flush()?;
+        writer.flush().context("Failed to flush CSV writer")?;
     }
-
     Ok(())
 }
 
@@ -163,7 +152,6 @@ async fn main() -> Result<()> {
 
     // Extract tables
     let tables = extract_tables(&html_content)?;
-
     if tables.is_empty() {
         println!("No tables found in the input source.");
         return Ok(());
@@ -172,6 +160,5 @@ async fn main() -> Result<()> {
     // Save tables as CSV files
     save_tables(&tables, &cli.output_dir)?;
     println!("Successfully extracted {} tables!", tables.len());
-
     Ok(())
 }

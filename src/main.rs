@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use colored::*;
 use csv::Writer;
 use reqwest;
 use scraper::{ElementRef, Html, Selector};
@@ -31,15 +32,22 @@ struct Cell {
 
 async fn fetch_html(source: &str, debug: bool) -> Result<String> {
     let result = if source.starts_with("http://") || source.starts_with("https://") {
-        reqwest::get(source).await?.text().await.context("Failed to fetch URL")
+        reqwest::get(source)
+            .await?
+            .text()
+            .await
+            .context("Failed to fetch URL")
     } else {
         fs::read_to_string(source).context(format!("Failed to read file: {}", source))
     };
 
     if debug {
         match &result {
-            Ok(html) => println!("Fetched HTML content: \n{}", &html[..html.len().min(200)]), // Print first 200 characters
-            Err(e) => println!("Error fetching HTML: {:?}", e),
+            Ok(html) => println!(
+                "{}",
+                format!("Fetched HTML content: \n{}", &html[..html.len().min(200)]).green()
+            ), // Print first 200 characters
+            Err(e) => println!("{}", format!("Error fetching HTML: {:?}", e).red()),
         }
     }
     result
@@ -83,7 +91,7 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
             {
                 if let Some(prev_cell) = &grid.last().unwrap()[col_index] {
                     current_row.push(Some(Cell {
-                        content: prev_cell.content.clone(),
+                        content: String::new(),
                         colspan: prev_cell.colspan,
                         rowspan: prev_cell.rowspan - 1,
                     }));
@@ -119,11 +127,15 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
             }
             if debug {
                 println!(
-                    "Table {}: Row {}: Columns: {}, Cells: {:?}",
-                    table_index + 1,
-                    row_index + 1,
-                    max_columns,
-                    current_row
+                    "{}",
+                    format!(
+                        "Table {}: Row {}: Columns: {}, Cells: {:?}",
+                        table_index + 1,
+                        row_index + 1,
+                        max_columns,
+                        current_row
+                    )
+                    .blue()
                 );
             }
             grid.push(current_row.clone());
@@ -139,14 +151,25 @@ fn extract_tables(html: &str, debug: bool) -> Result<Vec<Vec<Vec<String>>>> {
         }
         if !final_table.is_empty() {
             if debug {
-                println!("Table {}: Extracted rows: {}", table_index + 1, final_table.len());
+                println!(
+                    "{}",
+                    format!(
+                        "Table {}: Extracted rows: {}",
+                        table_index + 1,
+                        final_table.len()
+                    )
+                    .blue()
+                );
             }
             tables.push(final_table.clone());
         }
     }
 
     if debug {
-        println!("Total tables extracted: {}", tables.len());
+        println!(
+            "{}",
+            format!("Total tables extracted: {}", tables.len()).blue()
+        );
     }
     Ok(tables)
 }

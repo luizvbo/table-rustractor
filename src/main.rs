@@ -126,17 +126,17 @@ fn process_table(
     let mut max_columns = 0;
     let mut nested_tables = Vec::new();
 
-    // First, collect any nested tables
+    // Collect nested tables
     for cell in table.select(cell_selector) {
         if let Some(nested_table) = cell.select(table_selector).next() {
-            nested_tables.push(nested_table);
+            nested_tables.push((cell.clone(), nested_table));
         }
     }
 
     // Process nested tables first
-    for nested_table in nested_tables {
+    for (_, nested_table) in &nested_tables {
         process_table(
-            nested_table,
+            *nested_table,
             table_selector,
             row_selector,
             cell_selector,
@@ -169,12 +169,12 @@ fn process_table(
 
         for cell in row.select(cell_selector) {
             // Skip cells that contain nested tables - we've already processed them
-            if cell.select(table_selector).next().is_some() {
-                let (colspan, _) = get_cell_spans(cell);
+            if nested_tables.iter().any(|(nested_cell, _)| cell.html() == nested_cell.html()) {
+                let (colspan, rowspan) = get_cell_spans(cell);
                 current_row.push(Some(Cell {
                     content: String::new(),
                     colspan,
-                    rowspan: 1,
+                    rowspan,
                 }));
                 for _ in 1..colspan {
                     current_row.push(None);
@@ -195,36 +195,31 @@ fn process_table(
                 rowspan,
             };
 
-            current_row.push(Some(new_cell));
+            current_row.push(Some(new_cell.clone()));
             for _ in 1..colspan {
                 current_row.push(None);
+                col_index += 1;
             }
-            col_index += colspan;
+            col_index += 1;
         }
 
         max_columns = max_columns.max(col_index);
-
         while current_row.len() < max_columns {
             current_row.push(None);
         }
-
-        grid.push(current_row);
+        grid.push(current_row.clone());
     }
 
-    // Finally, convert the grid to the final table format
     let mut final_table = Vec::new();
     for row in grid {
         let row_data: Vec<String> = row
-            .iter()
-            .map(|cell| cell.as_ref().map_or(String::new(), |c| c.content.clone()))
+            .into_iter()
+            .map(|cell| cell.map_or(String::new(), |c| c.content))
             .collect();
-        if !row_data.iter().all(|s| s.is_empty()) {
-            final_table.push(row_data);
-        }
+        final_table.push(row_data);
     }
-
     if !final_table.is_empty() {
-        tables.push(final_table);
+        tables.push(final_table.clone());
     }
 }
 
@@ -356,6 +351,9 @@ mod tests {
           </body>
         </html>"#;
         let tables = extract_tables(html, false).unwrap();
+        for table in &tables{
+            println!("{:?}", table);
+        }
         assert_eq!(tables.len(), 2);
         // Main table assertions
         assert_eq!(tables[0].len(), 2);
